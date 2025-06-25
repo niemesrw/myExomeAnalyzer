@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "vcf-analyzer": {
+      "command": "/Users/ryan/dev/myExomeAnalyzer/mcp-server-wrapper.sh",
+      "env": {
+        "TILEDB_WORKSPACE": "/Users/ryan/dev/myExomeAnalyzer/tiledb_workspace",
+        "TILEDB_TEMP_DIR": "/tmp/tiledb"
+      }
+    }
+  }
+}
