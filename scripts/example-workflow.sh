@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# Example workflow for MyExome Analyzer
+# Example workflow for MyExome Analyzer with TileDB
 # This script demonstrates the complete workflow from setup to analysis
 
 set -e
 
-echo "🧬 MyExome Analyzer - Example Workflow"
-echo "======================================"
+echo "🧬 MyExome Analyzer - Example Workflow (TileDB Edition)"
+echo "========================================================"
 
 # Check if we're in the right directory
 if [ ! -f "package.json" ]; then
@@ -16,57 +16,41 @@ fi
 
 echo "1. 🔧 Setting up environment..."
 
-# Copy environment file if it doesn't exist
-if [ ! -f ".env" ]; then
-    echo "   📁 Copying environment configuration..."
-    cp .env.example .env
-    echo "   ✅ Environment file created"
-else
-    echo "   ✅ Environment file already exists"
-fi
-
-# Install dependencies if node_modules doesn't exist
+# Install Node.js dependencies if needed
 if [ ! -d "node_modules" ]; then
-    echo "   📦 Installing dependencies..."
+    echo "   📦 Installing Node.js dependencies..."
     npm install
     echo "   ✅ Dependencies installed"
 else
-    echo "   ✅ Dependencies already installed"
+    echo "   ✅ Node.js dependencies already installed"
+fi
+
+# Setup Python virtual environment
+if [ ! -d "venv" ]; then
+    echo "   🐍 Creating Python virtual environment..."
+    python3 -m venv venv
+    echo "   ✅ Virtual environment created"
+else
+    echo "   ✅ Python virtual environment already exists"
+fi
+
+# Activate virtual environment and install TileDB
+echo "   🔌 Activating Python environment and checking TileDB..."
+source venv/bin/activate
+if ! python -c "import tiledb_vcf" 2>/dev/null; then
+    echo "   📦 Installing TileDB-VCF..."
+    pip install tiledb-vcf
+    echo "   ✅ TileDB-VCF installed"
+else
+    echo "   ✅ TileDB-VCF already installed"
 fi
 
 echo
-echo "2. 🐳 Starting Docker services..."
-
-# Start Docker services
-docker-compose -f docker/docker-compose.yml up -d
-
-# Wait for PostgreSQL to be ready
-echo "   ⏳ Waiting for PostgreSQL to be ready..."
-max_attempts=30
-attempt=1
-
-while [ $attempt -le $max_attempts ]; do
-    if npm run db:status >/dev/null 2>&1; then
-        echo "   ✅ PostgreSQL is ready"
-        break
-    fi
-    
-    if [ $attempt -eq $max_attempts ]; then
-        echo "   ❌ PostgreSQL failed to start after $max_attempts attempts"
-        exit 1
-    fi
-    
-    echo "   ⏳ Attempt $attempt/$max_attempts - waiting..."
-    sleep 2
-    ((attempt++))
-done
+echo "2. 🏗️  Building TypeScript..."
+npm run build
 
 echo
-echo "3. 📊 Checking database status..."
-npm run analyze db status
-
-echo
-echo "4. 📄 Creating example VCF file..."
+echo "3. 📄 Creating example VCF file..."
 
 # Create a small example VCF file if it doesn't exist
 if [ ! -f "data/example.vcf" ]; then
@@ -91,51 +75,46 @@ else
 fi
 
 echo
-echo "5. 📥 Importing VCF file..."
-npm run analyze import data/example.vcf
+echo "4. 📥 Importing VCF file into TileDB..."
+npm run analyze import data/example.vcf --threads 4 --batch-size 1000
 
 echo
-echo "6. 📊 Getting database statistics..."
+echo "5. 📊 Getting TileDB array statistics..."
 npm run analyze stats
 
 echo
-echo "7. 🔍 Running example queries..."
+echo "6. 🔍 Running example queries..."
 
 echo "   → Variants on chromosome 1:"
 npm run analyze query --chrom 1
-
-echo
-echo "   → High quality variants (>80):"
-npm run analyze query --min-qual 80
 
 echo
 echo "   → Variants in position range:"
 npm run analyze query --chrom 2 --start 250000 --end 450000
 
 echo
-echo "8. 🤖 Starting MCP server (in background)..."
-echo "   Run in another terminal: npm run mcp-server"
-echo "   Then configure Claude Desktop to use: http://localhost:3000"
+echo "7. 🤖 Starting MCP servers..."
+echo "   Main server: npm run mcp-server"
+echo "   gnomAD server: npm run mcp-gnomad"
+echo "   Configure Claude Desktop with these servers for AI-powered analysis"
 
 echo
-echo "9. 🎯 Example Claude queries you can try:"
+echo "8. 🎯 Example Claude queries you can try:"
 echo "   • 'Show me all variants with high quality scores'"
 echo "   • 'What's the allele frequency for variants on chromosome 1?'"
 echo "   • 'Compare the genotypes between Sample1 and Sample2'"
-echo "   • 'Find variants that are heterozygous in Sample1'"
-
-echo
-echo "10. 🗄️  Direct database access:"
-echo "    You can also query the database directly:"
-echo "    docker exec -it vcf_postgres psql -U vcf_user -d vcf_analysis"
+echo "   • 'Find pathogenic variants in the dataset'"
+echo "   • 'Generate a quality control report for the samples'"
 
 echo
 echo "🎉 Workflow complete!"
-echo "   • Database is running with example data"
+echo "   • TileDB arrays created with example data"
 echo "   • Try the CLI commands shown above"
-echo "   • Start the MCP server to use with Claude"
-echo "   • Check out scripts/example-queries.sql for more SQL examples"
+echo "   • Start the MCP servers to use with Claude"
+echo "   • Check out the tests/ directory for more examples"
 
 echo
-echo "🛑 To stop services:"
-echo "   docker-compose -f docker/docker-compose.yml down"
+echo "📝 Notes:"
+echo "   • TileDB data is stored in tiledb_workspace/"
+echo "   • Always activate Python venv before running: source venv/bin/activate"
+echo "   • For real VCF files, use higher thread counts: --threads 8"

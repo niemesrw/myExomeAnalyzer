@@ -5,6 +5,36 @@ import { spawn, ChildProcess } from 'child_process';
 import { config } from '../config/index.js';
 import { VariantQuery, VariantResult, ArrayStats } from './query-engine.js';
 
+export interface PopulationFrequencyQuery {
+    type: 'population_frequency_lookup';
+    chrom: number;
+    pos: number;
+    ref: string;
+    alt: string;
+}
+
+export interface PopulationFrequencyResult {
+    variants: Array<{
+        chrom: string;
+        pos: number;
+        ref: string;
+        alt: string;
+        af_global: number;
+        af_afr: number;
+        af_amr: number;
+        af_asj: number;
+        af_eas: number;
+        af_fin: number;
+        af_nfe: number;
+        af_oth: number;
+        ac_global: number;
+        an_global: number;
+        nhomalt_global: number;
+        faf95_global: number;
+        is_common: boolean;
+    }>;
+}
+
 export class TileDBDaemonClient {
     private socketPath: string;
     private daemonProcess: ChildProcess | null = null;
@@ -199,6 +229,67 @@ export class TileDBDaemonClient {
         }
     }
 
+    async lookupPopulationFrequency(chrom: string, pos: number, ref: string, alt: string): Promise<PopulationFrequencyResult> {
+        try {
+            await this.ensureDaemonRunning();
+            
+            const response = await this.sendRequest({
+                operation: 'population_frequency_lookup',
+                params: { chrom, pos, ref, alt }
+            });
+
+            if (response.error) {
+                console.error(`Population frequency lookup error: ${response.error}`);
+                return { variants: [] };
+            }
+
+            return response;
+        } catch (error) {
+            console.error(`Error looking up population frequency: ${error}`);
+            return { variants: [] };
+        }
+    }
+
+    async getPopulationStatistics(): Promise<{
+        totalVariants: number;
+        commonVariants: number;
+        rareVariants: number;
+        arrayAvailable: boolean;
+    }> {
+        try {
+            await this.ensureDaemonRunning();
+            
+            const response = await this.sendRequest({
+                operation: 'population_frequency_stats'
+            });
+
+            if (response.error) {
+                console.error(`Population stats error: ${response.error}`);
+                return {
+                    totalVariants: 0,
+                    commonVariants: 0,
+                    rareVariants: 0,
+                    arrayAvailable: false
+                };
+            }
+
+            return {
+                totalVariants: response.total_variants || 0,
+                commonVariants: response.common_variants || 0,
+                rareVariants: response.rare_variants || 0,
+                arrayAvailable: response.array_available || false
+            };
+        } catch (error) {
+            console.error(`Error getting population statistics: ${error}`);
+            return {
+                totalVariants: 0,
+                commonVariants: 0,
+                rareVariants: 0,
+                arrayAvailable: false
+            };
+        }
+    }
+
     async shutdown(): Promise<void> {
         if (this.daemonProcess) {
             this.daemonProcess.kill('SIGTERM');
@@ -208,6 +299,41 @@ export class TileDBDaemonClient {
         // Remove socket file
         if (fs.existsSync(this.socketPath)) {
             fs.unlinkSync(this.socketPath);
+        }
+    }
+}
+
+// Simplified client for use by other services
+export class DaemonClient {
+    private client: TileDBDaemonClient;
+
+    constructor(workspacePath: string) {
+        this.client = new TileDBDaemonClient();
+    }
+
+    async executeQuery(query: PopulationFrequencyQuery | any): Promise<any> {
+        switch (query.type) {
+            case 'population_frequency_lookup':
+                return await this.client.lookupPopulationFrequency(
+                    query.chrom.toString(),
+                    query.pos,
+                    query.ref,
+                    query.alt
+                );
+            case 'population_frequency_stats':
+                return await this.client.getPopulationStatistics();
+            default:
+                // Fallback to variants query for compatibility
+                const variants = await this.client.queryVariants({
+                    chrom: query.chrom?.toString(),
+                    start: query.start,
+                    end: query.end,
+                    ref: query.ref,
+                    alt: query.alt,
+                    minQual: query.minQual,
+                    limit: query.limit || 100
+                });
+                return variants;
         }
     }
 }

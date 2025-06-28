@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "myexome-analyzer": {
+      "command": "node",
+      "args": ["./dist/mcp-server/server.js"],
+      "cwd": "/Users/ryan/dev/myExomeAnalyzer",
+      "env": {
+        "NODE_ENV": "production"
+      }
+    },
+    "gnomad-reference": {
+      "command": "node",
+      "args": ["./dist/server.js"],
+      "cwd": "/Users/ryan/dev/myExomeAnalyzer/src/gnomad-mcp-server",
+      "env": {
+        "GNOMAD_DATA_DIR": "/Users/ryan/dev/myExomeAnalyzer/data/gnomad"
+      }
+    }
+  }
+}

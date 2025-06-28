@@ -116,6 +116,23 @@ def query_variants(array_path, query_params):
                         if query['alt'] not in variant['alt']:
                             continue
                     
+                    # Apply sample filtering
+                    if 'samples' in query and query['samples']:
+                        sample_found = False
+                        for sample_id in query['samples']:
+                            if sample_id in variant['samples']:
+                                sample_found = True
+                                break
+                        if not sample_found:
+                            continue
+                        
+                        # Filter variant samples to only include requested samples
+                        filtered_samples = {}
+                        for sample_id in query['samples']:
+                            if sample_id in variant['samples']:
+                                filtered_samples[sample_id] = variant['samples'][sample_id]
+                        variant['samples'] = filtered_samples
+                    
                     variants.append(variant)
             
             print(json.dumps(variants))
@@ -183,21 +200,42 @@ def get_array_stats(array_path):
                     if i in reverse_chrom_map:
                         chromosomes.append(reverse_chrom_map[i])
                 
-                # Count actual variants by sampling
+                # Count actual variants and unique samples by sampling
                 total_variants = 0
+                unique_samples = set()
                 try:
-                    # Sample a small range to get count pattern
-                    sample_result = A[int(chrom_range[0]):int(chrom_range[0])+1, int(pos_range[0]):min(int(pos_range[0])+10000, int(pos_range[1]))]
-                    if 'chrom' in sample_result and hasattr(sample_result['chrom'], 'size'):
-                        if sample_result['chrom'].size > 0:
-                            # Use known import count as it's most accurate
-                            total_variants = 38821856
+                    # Sample multiple chromosomes and position ranges to get better sample coverage
+                    total_sampled = 0
+                    for test_chrom in [1, 13, 17, 22]:  # Key chromosomes
+                        if test_chrom >= int(chrom_range[0]) and test_chrom <= int(chrom_range[1]):
+                            # Sample from multiple position ranges to catch all samples
+                            for start_pos in [1, 1000000, 20000000, 50000000]:
+                                end_pos = min(start_pos + 1000, int(pos_range[1]))
+                                if start_pos < int(pos_range[1]):
+                                    chrom_result = A[test_chrom:test_chrom+1, start_pos:end_pos]
+                                    if 'chrom' in chrom_result and chrom_result['chrom'].size > 0:
+                                        total_sampled += chrom_result['chrom'].size
+                                        # Collect sample names from this chromosome
+                                        if 'samples' in chrom_result:
+                                            for i in range(len(chrom_result['samples'])):
+                                                try:
+                                                    samples_data = json.loads(chrom_result['samples'][i])
+                                                    unique_samples.update(samples_data.keys())
+                                                except:
+                                                    continue
+                    
+                    if total_sampled > 0:
+                        # Estimate total variants based on sampling
+                        range_size = min(16000, int(pos_range[1]) - int(pos_range[0]))  # 4 chroms * 4 positions * 1000
+                        total_range = int(pos_range[1]) - int(pos_range[0])
+                        if range_size > 0:
+                            total_variants = int((total_sampled / range_size) * total_range)
                         else:
-                            total_variants = 0
+                            total_variants = total_sampled
                     else:
-                        total_variants = 38821856  # Use known import count
+                        total_variants = 0  # No variants found
                 except Exception as count_error:
-                    total_variants = 38821856  # Use known import count as fallback
+                    total_variants = 0  # Error counting, assume empty
                 
                 # Get array size on disk
                 array_size = sum(
@@ -220,7 +258,7 @@ def get_array_stats(array_path):
                     'totalVariants': total_variants,
                     'chromosomes': chromosomes,
                     'positionRange': [int(pos_range[0]), int(pos_range[1])],
-                    'sampleCount': 1,
+                    'sampleCount': len(unique_samples),
                     'arraySize': size_str
                 }
             else:
@@ -248,10 +286,10 @@ def get_array_stats(array_path):
             size_str = "Unknown"
             
         stats = {
-            'totalVariants': 38821856,  # Use known import count
+            'totalVariants': 0,  # Error occurred, unknown count
             'chromosomes': ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', 'X', 'Y', 'MT'],
             'positionRange': [1, 248946422],
-            'sampleCount': 1,
+            'sampleCount': 0,  # Error occurred, unknown count
             'arraySize': size_str
         }
         print(json.dumps(stats))
@@ -272,6 +310,164 @@ if __name__ == "__main__":
                 chromosomes: [],
                 positionRange: [0, 0],
                 sampleCount: 0,
+                arraySize: '0 B'
+            };
+        }
+    }
+
+    async getSampleStats(sampleIds: string[]): Promise<ArrayStats> {
+        const pythonScript = `
+import tiledb
+import numpy as np
+import json
+import sys
+import os
+
+def get_sample_stats(array_path, sample_ids):
+    """Get statistics for specific samples"""
+    
+    try:
+        sample_list = json.loads(sample_ids)
+        
+        if not os.path.exists(array_path):
+            print(json.dumps({
+                'totalVariants': 0,
+                'chromosomes': [],
+                'positionRange': [0, 0],
+                'sampleCount': 0,
+                'arraySize': '0 B'
+            }))
+            return
+            
+        with tiledb.open(array_path) as A:
+            # Get array bounds
+            non_empty = A.nonempty_domain()
+            
+            if non_empty and len(non_empty) >= 2:
+                chrom_range = non_empty[0]
+                pos_range = non_empty[1]
+                
+                # Reverse chromosome mapping
+                reverse_chrom_map = {
+                    **{i: str(i) for i in range(1, 23)},
+                    23: 'X', 24: 'Y', 25: 'MT'
+                }
+                
+                chromosomes = []
+                for i in range(int(chrom_range[0]), int(chrom_range[1]) + 1):
+                    if i in reverse_chrom_map:
+                        chromosomes.append(reverse_chrom_map[i])
+                
+                # Count variants that have data for any of the requested samples
+                total_variants = 0
+                sample_variant_count = 0
+                
+                # Sample across multiple chromosomes to estimate sample-specific count
+                try:
+                    total_sample_count = 0
+                    total_sample_variants = 0
+                    
+                    # Sample from several chromosomes to get a good estimate
+                    test_chroms = [1, 13, 17, 22]  # Key chromosomes where GIAB data likely exists
+                    for test_chrom in test_chroms:
+                        if test_chrom >= int(chrom_range[0]) and test_chrom <= int(chrom_range[1]):
+                            # Sample a reasonable range from each chromosome
+                            sample_size = min(10000, int(pos_range[1]) - int(pos_range[0]))
+                            sample_result = A[test_chrom:test_chrom+1, 
+                                           int(pos_range[0]):int(pos_range[0])+sample_size]
+                            
+                            if 'samples' in sample_result and sample_result['samples'].size > 0:
+                                chrom_sample_variants = 0
+                                for i in range(len(sample_result['samples'])):
+                                    try:
+                                        samples_data = json.loads(sample_result['samples'][i])
+                                        # Check if any requested sample is present
+                                        for sample_id in sample_list:
+                                            if sample_id in samples_data:
+                                                chrom_sample_variants += 1
+                                                break
+                                    except:
+                                        continue
+                                
+                                total_sample_count += sample_result['samples'].size
+                                total_sample_variants += chrom_sample_variants
+                    
+                    # Estimate total based on sampling across multiple chromosomes
+                    if total_sample_count > 0:
+                        sample_ratio = total_sample_variants / total_sample_count
+                        # Apply ratio to total estimated variants in the array
+                        estimated_total_variants = int(pos_range[1] - pos_range[0]) / 1000  # Rough estimate
+                        total_variants = int(sample_ratio * estimated_total_variants)
+                    else:
+                        total_variants = 0
+                    
+                except Exception as count_error:
+                    total_variants = 0
+                
+                # Get array size on disk
+                array_size = sum(
+                    os.path.getsize(os.path.join(dirpath, filename))
+                    for dirpath, dirnames, filenames in os.walk(array_path)
+                    for filename in filenames
+                )
+                
+                # Format size
+                if array_size < 1024:
+                    size_str = f"{array_size} B"
+                elif array_size < 1024 * 1024:
+                    size_str = f"{array_size / 1024:.1f} KB"
+                elif array_size < 1024 * 1024 * 1024:
+                    size_str = f"{array_size / (1024 * 1024):.1f} MB"
+                else:
+                    size_str = f"{array_size / (1024 * 1024 * 1024):.1f} GB"
+                
+                stats = {
+                    'totalVariants': total_variants,
+                    'chromosomes': chromosomes,
+                    'positionRange': [int(pos_range[0]), int(pos_range[1])],
+                    'sampleCount': len(sample_list),
+                    'arraySize': size_str
+                }
+            else:
+                stats = {
+                    'totalVariants': 0,
+                    'chromosomes': [],
+                    'positionRange': [0, 0],
+                    'sampleCount': len(sample_list),
+                    'arraySize': '0 B'
+                }
+            
+            print(json.dumps(stats))
+            
+    except Exception as e:
+        print(f"Error getting sample stats: {e}", file=sys.stderr)
+        stats = {
+            'totalVariants': 0,
+            'chromosomes': [],
+            'positionRange': [0, 0],
+            'sampleCount': len(json.loads(sample_ids)) if sample_ids else 0,
+            'arraySize': "Unknown"
+        }
+        print(json.dumps(stats))
+
+if __name__ == "__main__":
+    array_path = sys.argv[1]
+    sample_ids = sys.argv[2]
+    get_sample_stats(array_path, sample_ids)
+`;
+
+        try {
+            const arrayPath = path.join(this.workspace, 'variants');
+            const sampleIdsJson = JSON.stringify(sampleIds);
+            const result = await this.runPythonScript(pythonScript, [arrayPath, sampleIdsJson]);
+            return JSON.parse(result.stdout);
+        } catch (error) {
+            console.error(`Error getting sample stats: ${error}`);
+            return {
+                totalVariants: 0,
+                chromosomes: [],
+                positionRange: [0, 0],
+                sampleCount: sampleIds.length,
                 arraySize: '0 B'
             };
         }

@@ -98,7 +98,8 @@ export class ClinicalMetadataService {
         validationRequired: 'Clinical genetic testing required for health-related decisions',
         qualityInterpretation: {
             'PASS': 'High quality variant - suitable for clinical consideration with validation',
-            'IMP': 'Imputed variant - statistical inference, requires validation',
+            'BOOSTED': 'Quality-boosted variant - high confidence, suitable for clinical consideration',
+            'IMP': 'Imputed variant - statistical inference, moderate confidence, requires validation',
             'LOWQ': 'Low quality variant - not suitable for clinical decisions',
             '.': 'No filter applied - quality assessment needed'
         },
@@ -188,6 +189,18 @@ Consult a genetic counselor or medical geneticist for clinical interpretation.
                 `⚠️ Low quality variants detected - clinical confirmation required before interpretation`
             );
         }
+        
+        if (qualityFilter.includes('BOOSTED') || qualityFilter.includes('PASS')) {
+            recommendations.push(
+                `✅ High quality variants detected - suitable for clinical consideration with validation`
+            );
+        }
+        
+        if (qualityFilter.includes('IMP')) {
+            recommendations.push(
+                `ℹ️ Imputed variants detected - statistical inference with moderate confidence, clinical validation recommended`
+            );
+        }
 
         // Analysis type specific recommendations
         if (analysisType === 'cancer') {
@@ -258,7 +271,7 @@ CRITICAL SAFETY GUIDELINES:
 ANALYSIS FRAMEWORK:
 - Prioritize established clinically actionable genes
 - Apply population frequency filtering (exclude common variants >1%)
-- Interpret quality scores appropriately (PASS > IMP > LOWQ)
+- Interpret quality scores appropriately (PASS > BOOSTED > IMP > LOWQ)
 - Emphasize clinical validation requirements
 - Provide balanced risk communication
         `;

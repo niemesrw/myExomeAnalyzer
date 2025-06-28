@@ -9,10 +9,16 @@
     "dev": "tsc --watch",
     "analyze": "node dist/cli/index.js",
     "mcp-server": "node dist/mcp-server/server.js",
-    "test": "node --test",
+    "mcp-gnomad": "cd src/gnomad-mcp-server && node dist/server.js",
+    "build:all": "./scripts/build-mcp-servers.sh",
+    "build:gnomad": "cd src/gnomad-mcp-server && npm run build",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "test:unit": "jest tests/unit",
+    "test:integration": "jest tests/integration",
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
-    "setup": "node dist/cli/index.js setup",
     "example": "./scripts/example-workflow.sh"
   },
   "bin": {
@@ -44,9 +50,15 @@
     "dotenv": "^16.0.0"
   },
   "devDependencies": {
+    "@jest/globals": "^30.0.3",
     "@types/cli-progress": "^3.11.6",
+    "@types/jest": "^30.0.0",
     "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.35.0",
+    "@typescript-eslint/parser": "^8.35.0",
     "eslint": "^8.0.0",
+    "jest": "^30.0.3",
+    "ts-jest": "^29.4.0",
     "typescript": "^5.0.0"
   },
   "engines": {

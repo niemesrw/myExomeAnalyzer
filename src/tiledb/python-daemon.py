@@ -36,6 +36,9 @@ class TileDBQueryDaemon:
         self.socket_path = socket_path
         self.variants_array = None
         self.samples_array = None
+        self.population_array = None  # New: population frequency array
+        self.gene_regions_array = None  # New: gene regions array
+        self.gene_features_array = None  # New: gene features array
         self.stats_cache = {}
         self.cache_ttl = 300  # 5 minutes
         self.running = False
@@ -67,6 +70,7 @@ class TileDBQueryDaemon:
         try:
             variants_path = os.path.join(self.workspace_path, 'variants')
             samples_path = os.path.join(self.workspace_path, 'samples')
+            population_path = os.path.join(self.workspace_path, 'population_arrays', 'population_frequencies')
             
             if os.path.exists(variants_path):
                 self.variants_array = tiledb.open(variants_path, 'r')
@@ -78,6 +82,29 @@ class TileDBQueryDaemon:
             if os.path.exists(samples_path):
                 self.samples_array = tiledb.open(samples_path, 'r')
                 logger.info("Opened samples array")
+            
+            # Population frequency array (optional)
+            if os.path.exists(population_path):
+                self.population_array = tiledb.open(population_path, 'r')
+                logger.info("Opened population frequency array")
+            else:
+                logger.info(f"Population frequency array not found at {population_path} (optional)")
+            
+            # Gene annotation arrays (optional)
+            gene_regions_path = os.path.join(self.workspace_path, 'gene_arrays', 'gene_regions')
+            gene_features_path = os.path.join(self.workspace_path, 'gene_arrays', 'gene_features')
+            
+            if os.path.exists(gene_regions_path):
+                self.gene_regions_array = tiledb.open(gene_regions_path, 'r')
+                logger.info("Opened gene regions array")
+            else:
+                logger.info(f"Gene regions array not found at {gene_regions_path} (optional)")
+                
+            if os.path.exists(gene_features_path):
+                self.gene_features_array = tiledb.open(gene_features_path, 'r')
+                logger.info("Opened gene features array")
+            else:
+                logger.info(f"Gene features array not found at {gene_features_path} (optional)")
             
             return True
         except Exception as e:
@@ -255,6 +282,104 @@ class TileDBQueryDaemon:
             logger.error(f"Error calculating allele frequency: {e}")
             return 0.0
 
+    def lookup_population_frequency(self, chrom: str, pos: int, ref: str, alt: str) -> Dict[str, Any]:
+        """Look up population frequency for a specific variant"""
+        try:
+            if not self.population_array:
+                return {"error": "Population frequency array not available"}
+            
+            chrom_num = self.chrom_map.get(chrom, 1)
+            
+            # Query exact position
+            result = self.population_array[chrom_num:chrom_num+1, pos:pos+1]
+            
+            # Find matching variant
+            if result['chrom'].size > 0:
+                for i in range(result['chrom'].size):
+                    if (result['chrom'][i] == chrom_num and 
+                        result['pos'][i] == pos and 
+                        result['ref'][i] == ref and 
+                        result['alt'][i] == alt):
+                        
+                        return {
+                            "variants": [{
+                                "chrom": chrom,
+                                "pos": pos,
+                                "ref": ref,
+                                "alt": alt,
+                                "af_global": float(result['af_global'][i]),
+                                "af_afr": float(result['af_afr'][i]),
+                                "af_amr": float(result['af_amr'][i]),
+                                "af_asj": float(result['af_asj'][i]),
+                                "af_eas": float(result['af_eas'][i]),
+                                "af_fin": float(result['af_fin'][i]),
+                                "af_nfe": float(result['af_nfe'][i]),
+                                "af_oth": float(result['af_oth'][i]),
+                                "ac_global": int(result['ac_global'][i]),
+                                "an_global": int(result['an_global'][i]),
+                                "nhomalt_global": int(result['nhomalt_global'][i]),
+                                "faf95_global": float(result['faf95_global'][i]),
+                                "is_common": bool(result['is_common'][i])
+                            }]
+                        }
+            
+            # Variant not found
+            return {"variants": []}
+            
+        except Exception as e:
+            logger.error(f"Error looking up population frequency: {e}")
+            return {"error": str(e), "variants": []}
+
+    def get_population_stats(self) -> Dict[str, Any]:
+        """Get population frequency array statistics"""
+        try:
+            if not self.population_array:
+                return {"error": "Population frequency array not available"}
+            
+            # Get cached stats if available
+            cache_key = "population_stats"
+            current_time = time.time()
+            
+            if cache_key in self.stats_cache:
+                cached_data, timestamp = self.stats_cache[cache_key]
+                if current_time - timestamp < self.cache_ttl:
+                    return cached_data
+            
+            # Count total variants (estimate from non-empty domain)
+            try:
+                non_empty = self.population_array.nonempty_domain()
+                # This is an estimate - actual counting would be too slow
+                estimated_variants = 750_000_000  # gnomAD v4.1 has ~750M variants
+            except:
+                estimated_variants = 0
+            
+            # Count common variants by querying is_common attribute
+            try:
+                # Query a sample to estimate common variant ratio
+                sample_result = self.population_array[1:2, 1:100000]
+                if sample_result['is_common'].size > 0:
+                    common_ratio = np.mean(sample_result['is_common'])
+                    estimated_common = int(estimated_variants * common_ratio)
+                else:
+                    estimated_common = 0
+            except:
+                estimated_common = 0
+            
+            stats = {
+                "total_variants": estimated_variants,
+                "common_variants": estimated_common,
+                "rare_variants": estimated_variants - estimated_common,
+                "array_available": True
+            }
+            
+            # Cache the result
+            self.stats_cache[cache_key] = (stats, current_time)
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Error getting population stats: {e}")
+            return {"error": str(e)}
+
     def handle_request(self, request_data: str) -> str:
         """Handle incoming query request"""
         try:
@@ -274,6 +399,16 @@ class TileDBQueryDaemon:
                     params.get('alt')
                 )
                 result = {"frequency": frequency}
+            elif operation == 'population_frequency_lookup':
+                params = request.get('params', {})
+                result = self.lookup_population_frequency(
+                    params.get('chrom'),
+                    params.get('pos'),
+                    params.get('ref'),
+                    params.get('alt')
+                )
+            elif operation == 'population_frequency_stats':
+                result = self.get_population_stats()
             elif operation == 'ping':
                 result = {"status": "ok", "uptime": time.time()}
             else:
@@ -343,6 +478,13 @@ class TileDBQueryDaemon:
                 logger.info("Closed samples array")
         except Exception as e:
             logger.error(f"Error closing samples array: {e}")
+        
+        try:
+            if self.population_array:
+                self.population_array.close()
+                logger.info("Closed population frequency array")
+        except Exception as e:
+            logger.error(f"Error closing population frequency array: {e}")
         
         if os.path.exists(self.socket_path):
             os.unlink(self.socket_path)

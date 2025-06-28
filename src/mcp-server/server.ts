@@ -10,11 +10,15 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { queryEngine } from '../tiledb/query-engine.js';
 import { clinicalMetadata } from '../clinical/clinical-metadata.js';
+import { PopulationFrequencyService } from '../population/population-frequency-service.js';
+import { config } from '../config/index.js';
 
 export class VCFMCPServer {
     private server: Server;
+    private populationService: PopulationFrequencyService;
 
     constructor() {
+        this.populationService = new PopulationFrequencyService(config.tiledb.workspace);
         this.server = new Server(
             {
                 name: 'vcf-analyzer',
@@ -49,7 +53,8 @@ CLINICAL CONTEXT:
 
 INTERPRETATION GUIDELINES:
 - Variants with >1% population frequency are likely benign
-- Quality filters: PASS > IMP (imputed) > LOWQ (low quality)
+- Quality filters for Helix exome data: PASS > BOOSTED > IMP (imputed) > LOWQ (low quality)
+- Clinical variants typically have PASS, BOOSTED, or high-quality IMP filters
 - Focus analysis on established clinically actionable genes
 - Clinical validation required for any health-related decisions`,
                         inputSchema: {
@@ -100,13 +105,20 @@ INTERPRETATION GUIDELINES:
                     },
                     {
                         name: 'filter_variants',
-                        description: 'Filter variants by quality, impact, or other criteria',
+                        description: 'Filter variants by quality, impact, or other criteria for Helix exome data',
                         inputSchema: {
                             type: 'object',
                             properties: {
                                 min_qual: { type: 'number', description: 'Minimum quality score' },
                                 max_qual: { type: 'number', description: 'Maximum quality score' },
-                                filter_status: { type: 'string', description: 'Filter status (e.g., "PASS")' },
+                                filter_status: { 
+                                    type: 'string', 
+                                    description: 'Filter status: "PASS", "BOOSTED", "IMP", "LOWQ", or "clinical" for PASS+BOOSTED+IMP' 
+                                },
+                                quality_tier: {
+                                    type: 'string',
+                                    description: 'Quality tier: "high" (PASS+BOOSTED), "moderate" (IMP), "low" (LOWQ), "clinical" (PASS+BOOSTED+IMP)'
+                                },
                                 consequence: { type: 'string', description: 'Variant consequence' },
                                 limit: { type: 'number', description: 'Maximum number of results (default: 100)' }
                             }
@@ -194,6 +206,120 @@ Performs comprehensive cardiac genetic analysis including:
                         }
                     },
                     {
+                        name: 'lookup_population_frequency',
+                        description: `Look up population frequency for specific variants using gnomAD v4.1 data.
+                        
+Provides comprehensive population frequency analysis:
+- Global and population-specific frequencies (AFR, AMR, ASJ, EAS, FIN, NFE, OTH)
+- Clinical rarity interpretation and significance assessment
+- Automatic clinical disclaimers and population context
+- Common variant identification (>1% frequency)
+- Professional interpretation guidelines
+
+Data source: gnomAD v4.1 (730,947 exomes + 76,215 genomes)`,
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                variants: {
+                                    type: 'array',
+                                    items: {
+                                        type: 'object',
+                                        properties: {
+                                            chrom: { type: 'string', description: 'Chromosome (e.g., "1", "X")' },
+                                            pos: { type: 'number', description: 'Position' },
+                                            ref: { type: 'string', description: 'Reference allele' },
+                                            alt: { type: 'string', description: 'Alternate allele' }
+                                        },
+                                        required: ['chrom', 'pos', 'ref', 'alt']
+                                    },
+                                    description: 'List of variants to look up'
+                                },
+                                include_interpretation: {
+                                    type: 'boolean',
+                                    description: 'Include clinical interpretation and rarity assessment (default: true)'
+                                }
+                            },
+                            required: ['variants']
+                        }
+                    },
+                    {
+                        name: 'filter_variants_by_frequency',
+                        description: `Filter variants based on population frequency criteria with clinical context.
+                        
+Enables sophisticated frequency-based filtering:
+- Exclude common variants (>1% population frequency)
+- Population-specific frequency filtering
+- Rarity-based clinical prioritization
+- Automatic clinical disclaimers and warnings
+- Professional interpretation guidelines`,
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                chrom: { type: 'string', description: 'Chromosome to search' },
+                                start: { type: 'number', description: 'Start position (optional)' },
+                                end: { type: 'number', description: 'End position (optional)' },
+                                max_frequency: { 
+                                    type: 'number', 
+                                    description: 'Maximum global frequency (e.g., 0.01 for <1%)' 
+                                },
+                                min_frequency: { 
+                                    type: 'number', 
+                                    description: 'Minimum global frequency (optional)' 
+                                },
+                                populations: {
+                                    type: 'array',
+                                    items: { type: 'string' },
+                                    description: 'Specific populations to consider (AFR, AMR, ASJ, EAS, FIN, NFE, OTH)'
+                                },
+                                exclude_common: {
+                                    type: 'boolean',
+                                    description: 'Exclude common variants (>1% frequency) - recommended for clinical analysis'
+                                },
+                                limit: { type: 'number', description: 'Maximum results (default: 100)' }
+                            }
+                        }
+                    },
+                    {
+                        name: 'search_clinical_quality_variants',
+                        description: `Search for clinical-quality variants (PASS, BOOSTED, IMP) with enhanced filtering for Helix exome data.
+                        
+Optimized for clinical analysis with Helix data quality filters:
+- Automatically includes PASS, BOOSTED, and IMP quality variants (excludes LOWQ)
+- Provides detailed quality interpretation for Helix exome pipeline
+- Enhanced clinical context and population frequency integration
+- Automatic clinical disclaimers and validation requirements
+- Gene-specific clinical actionability assessment
+
+Quality hierarchy: PASS > BOOSTED > IMP > LOWQ`,
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                chrom: { type: 'string', description: 'Chromosome (e.g., "1", "X", "Y")' },
+                                start: { type: 'number', description: 'Start position' },
+                                end: { type: 'number', description: 'End position' },
+                                gene: { type: 'string', description: 'Gene symbol (focus on clinically actionable genes)' },
+                                include_quality_filters: {
+                                    type: 'array',
+                                    items: { type: 'string' },
+                                    description: 'Quality filters to include: PASS, BOOSTED, IMP (default: [PASS, BOOSTED, IMP])'
+                                },
+                                exclude_low_quality: {
+                                    type: 'boolean',
+                                    description: 'Exclude LOWQ variants (default: true)'
+                                },
+                                min_quality_score: {
+                                    type: 'number',
+                                    description: 'Minimum quality score (default: 30)'
+                                },
+                                limit: { type: 'number', description: 'Maximum number of results (default: 100)' },
+                                analysis_type: { 
+                                    type: 'string', 
+                                    description: 'Analysis context: "general", "cancer", "cardiac", "pharmacogenomic"' 
+                                }
+                            }
+                        }
+                    },
+                    {
                         name: 'get_clinical_interpretation_prompt',
                         description: `Generate appropriate clinical interpretation prompts with safety guidelines.
                         
@@ -246,6 +372,12 @@ Returns structured prompts for genomic data interpretation with:
                         return await this.analyzeCardiacGenes(args);
                     case 'get_clinical_interpretation_prompt':
                         return await this.getClinicalInterpretationPrompt(args);
+                    case 'lookup_population_frequency':
+                        return await this.lookupPopulationFrequency(args);
+                    case 'filter_variants_by_frequency':
+                        return await this.filterVariantsByFrequency(args);
+                    case 'search_clinical_quality_variants':
+                        return await this.searchClinicalQualityVariants(args);
                     default:
                         throw new Error(`Unknown tool: ${name}`);
                 }
@@ -456,6 +588,149 @@ Returns structured prompts for genomic data interpretation with:
                 ]
             };
         }
+    }
+
+    private async searchClinicalQualityVariants(args: any) {
+        const { 
+            chrom, 
+            start, 
+            end, 
+            gene, 
+            include_quality_filters = ['PASS', 'BOOSTED', 'IMP'],
+            exclude_low_quality = true,
+            min_quality_score = 30,
+            limit = 100, 
+            analysis_type = 'general' 
+        } = args;
+
+        try {
+            const query = {
+                chrom: chrom,
+                start: start,
+                end: end,
+                limit: limit * 2 // Get more results to filter
+            };
+
+            const allVariants = await queryEngine.queryVariants(query);
+
+            // Filter by quality criteria
+            const clinicalVariants = allVariants.filter(variant => {
+                // Quality filter check
+                const hasAcceptableFilter = variant.filter.some(filter => 
+                    include_quality_filters.includes(filter)
+                );
+                
+                // Exclude LOWQ if requested
+                const isNotLowQuality = exclude_low_quality ? 
+                    !variant.filter.includes('LOWQ') : true;
+                
+                // Quality score check
+                const meetsQualityScore = variant.qual === null || 
+                    variant.qual === undefined || 
+                    variant.qual >= min_quality_score;
+
+                return hasAcceptableFilter && isNotLowQuality && meetsQualityScore;
+            }).slice(0, limit); // Limit final results
+
+            // Extract genes from variants for clinical context
+            const genes = gene ? [gene] : [];
+            const qualityFilters = [...new Set(clinicalVariants.flatMap(v => v.filter))];
+
+            // Enhanced variant data with quality details
+            const variantData = {
+                count: clinicalVariants.length,
+                total_screened: allVariants.length,
+                quality_criteria: {
+                    included_filters: include_quality_filters,
+                    excluded_low_quality: exclude_low_quality,
+                    min_quality_score: min_quality_score
+                },
+                quality_distribution: {
+                    PASS: clinicalVariants.filter(v => v.filter.includes('PASS')).length,
+                    BOOSTED: clinicalVariants.filter(v => v.filter.includes('BOOSTED')).length,
+                    IMP: clinicalVariants.filter(v => v.filter.includes('IMP')).length,
+                    LOWQ: clinicalVariants.filter(v => v.filter.includes('LOWQ')).length
+                },
+                query_parameters: query,
+                variants: clinicalVariants.map(v => ({
+                    chromosome: v.chrom,
+                    position: v.pos,
+                    reference: v.ref,
+                    alternate: v.alt,
+                    quality: v.qual,
+                    quality_score: v.qual ? Math.round(v.qual * 10) / 10 : null,
+                    filter: v.filter,
+                    filter_tier: this.getQualityTier(v.filter),
+                    clinical_suitability: this.getClinicalSuitability(v.filter, v.qual),
+                    sample_count: Object.keys(v.samples).length
+                }))
+            };
+
+            // Wrap with enhanced clinical context
+            const clinicalResponse = clinicalMetadata.wrapWithClinicalContext(
+                variantData,
+                {
+                    genes,
+                    qualityFilters,
+                    analysisType: analysis_type,
+                    safetyLevel: 'research'
+                }
+            );
+
+            // Add Helix-specific quality guidance
+            clinicalResponse.clinicalRecommendations.unshift(
+                `📊 Helix Quality Filtering: Found ${clinicalVariants.length}/${allVariants.length} clinical-quality variants`,
+                `🎯 Quality Distribution: ${Object.entries(variantData.quality_distribution).map(([filter, count]) => `${filter}: ${count}`).join(', ')}`
+            );
+
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify(clinicalResponse, null, 2)
+                    }
+                ]
+            };
+
+        } catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to search clinical quality variants',
+                            message: error instanceof Error ? error.message : String(error)
+                        }, null, 2)
+                    }
+                ]
+            };
+        }
+    }
+
+    private getQualityTier(filters: string[]): string {
+        if (filters.includes('PASS')) return 'High';
+        if (filters.includes('BOOSTED')) return 'High';
+        if (filters.includes('IMP')) return 'Moderate';
+        if (filters.includes('LOWQ')) return 'Low';
+        return 'Unknown';
+    }
+
+    private getClinicalSuitability(filters: string[], quality?: number): string {
+        const hasHighQualityFilter = filters.includes('PASS') || filters.includes('BOOSTED');
+        const hasModerateFilter = filters.includes('IMP');
+        const hasLowQualityFilter = filters.includes('LOWQ');
+        
+        if (hasHighQualityFilter) {
+            return 'Suitable for clinical consideration with validation';
+        } else if (hasModerateFilter && quality && quality >= 30) {
+            return 'Moderate confidence - clinical validation strongly recommended';
+        } else if (hasModerateFilter) {
+            return 'Lower confidence imputed variant - clinical validation required';
+        } else if (hasLowQualityFilter) {
+            return 'Low quality - not suitable for clinical decisions';
+        }
+        
+        return 'Quality assessment needed';
     }
 
     private async getVariantDetails(args: any) {
@@ -957,6 +1232,218 @@ Returns structured prompts for genomic data interpretation with:
                         type: 'text',
                         text: JSON.stringify({
                             error: 'Failed to generate clinical interpretation prompt',
+                            message: error instanceof Error ? error.message : String(error)
+                        }, null, 2)
+                    }
+                ]
+            };
+        }
+    }
+
+    private async lookupPopulationFrequency(args: any) {
+        const { variants, include_interpretation = true } = args;
+
+        try {
+            if (!variants || !Array.isArray(variants)) {
+                throw new Error('Variants array is required');
+            }
+
+            const results = [];
+            
+            for (const variant of variants) {
+                const { chrom, pos, ref, alt } = variant;
+                
+                if (!chrom || !pos || !ref || !alt) {
+                    results.push({
+                        variant: variant,
+                        error: 'Missing required variant fields (chrom, pos, ref, alt)'
+                    });
+                    continue;
+                }
+                
+                try {
+                    const frequencyResult = await this.populationService.lookupVariantFrequency(
+                        chrom.toString(), pos, ref, alt
+                    );
+                    
+                    results.push({
+                        variant: { chrom, pos, ref, alt },
+                        found: frequencyResult.found,
+                        population_data: frequencyResult.frequency,
+                        interpretation: include_interpretation ? frequencyResult.interpretation : undefined
+                    });
+                } catch (error) {
+                    results.push({
+                        variant: variant,
+                        error: `Lookup failed: ${error instanceof Error ? error.message : String(error)}`
+                    });
+                }
+            }
+
+            // Add clinical disclaimer
+            const disclaimer = this.populationService.generatePopulationDisclaimer();
+            
+            const response = {
+                data_source: 'gnomAD v4.1',
+                lookup_results: results,
+                summary: {
+                    total_variants: variants.length,
+                    successful_lookups: results.filter(r => !r.error).length,
+                    found_in_gnomad: results.filter(r => r.found).length,
+                    novel_variants: results.filter(r => !r.found && !r.error).length
+                },
+                clinical_disclaimer: disclaimer
+            };
+
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify(response, null, 2)
+                    }
+                ]
+            };
+
+        } catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Population frequency lookup failed',
+                            message: error instanceof Error ? error.message : String(error)
+                        }, null, 2)
+                    }
+                ]
+            };
+        }
+    }
+
+    private async filterVariantsByFrequency(args: any) {
+        const { 
+            chrom, 
+            start, 
+            end, 
+            max_frequency, 
+            min_frequency,
+            populations = [],
+            exclude_common = true,
+            limit = 100 
+        } = args;
+
+        try {
+            // First, get variants from the specified region
+            const variants = await queryEngine.queryVariants({
+                chrom: chrom,
+                start: start,
+                end: end,
+                limit: limit * 2 // Get more to account for filtering
+            });
+
+            if (variants.length === 0) {
+                return {
+                    content: [
+                        {
+                            type: 'text',
+                            text: JSON.stringify({
+                                message: 'No variants found in specified region',
+                                region: chrom ? `${chrom}:${start || 'start'}-${end || 'end'}` : 'all chromosomes',
+                                filters_applied: { max_frequency, min_frequency, exclude_common, populations }
+                            }, null, 2)
+                        }
+                    ]
+                };
+            }
+
+            // Apply population frequency filtering
+            const variantList = variants.map(v => ({
+                chrom: v.chrom,
+                pos: v.pos,
+                ref: v.ref,
+                alt: v.alt.join(',') // Take first alt allele for now
+            }));
+
+            const filterOptions = {
+                maxFrequency: max_frequency,
+                minFrequency: min_frequency,
+                populations: populations,
+                excludeCommon: exclude_common
+            };
+
+            const filteredResults = await this.populationService.filterVariantsByFrequency(
+                variantList, filterOptions
+            );
+
+            // Combine original variant data with population filtering results
+            const finalResults = filteredResults
+                .filter(result => result.passesFilter)
+                .slice(0, limit)
+                .map(result => {
+                    const originalVariant = variants.find(v => 
+                        v.chrom === result.variant.chrom && 
+                        v.pos === result.variant.pos &&
+                        v.ref === result.variant.ref
+                    );
+                    
+                    return {
+                        ...originalVariant,
+                        population_frequency: result.populationData.frequency,
+                        frequency_interpretation: result.populationData.interpretation,
+                        passes_frequency_filter: result.passesFilter
+                    };
+                });
+
+            // Generate summary
+            const summary = {
+                total_variants_in_region: variants.length,
+                variants_after_frequency_filter: finalResults.length,
+                filters_applied: {
+                    max_frequency: max_frequency,
+                    min_frequency: min_frequency,
+                    exclude_common: exclude_common,
+                    populations: populations
+                },
+                frequency_statistics: {
+                    novel_variants: filteredResults.filter(r => !r.populationData.found).length,
+                    rare_variants: filteredResults.filter(r => 
+                        r.populationData.found && 
+                        r.populationData.frequency && 
+                        r.populationData.frequency.af_global < 0.001
+                    ).length,
+                    uncommon_variants: filteredResults.filter(r => 
+                        r.populationData.found && 
+                        r.populationData.frequency && 
+                        r.populationData.frequency.af_global >= 0.001 && 
+                        r.populationData.frequency.af_global < 0.01
+                    ).length
+                }
+            };
+
+            const disclaimer = this.populationService.generatePopulationDisclaimer();
+
+            const response = {
+                data_source: 'Personal exome + gnomAD v4.1',
+                filtered_variants: finalResults,
+                summary: summary,
+                clinical_disclaimer: disclaimer
+            };
+
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify(response, null, 2)
+                    }
+                ]
+            };
+
+        } catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Frequency-based filtering failed',
                             message: error instanceof Error ? error.message : String(error)
                         }, null, 2)
                     }

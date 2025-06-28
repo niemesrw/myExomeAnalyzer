@@ -85,6 +85,9 @@ Progress tracking uses EventEmitter pattern:
 
 ## Critical Implementation Details
 
+### Data Handling
+Because genomic data is large, we want to ensure we can resume sessions if they are interrupted.
+
 ### Worker Thread Communication
 Workers communicate via message passing:
 ```typescript
@@ -95,12 +98,8 @@ worker.postMessage({ type: 'task', data: { filePath, chrom, sampleMapping } });
 parentPort.postMessage({ type: 'progress', data: { processed, chrom, pos } });
 ```
 
-### Database Bulk Operations
-Use PostgreSQL COPY for performance:
-```typescript
-// Stream-based bulk insert in variants.ts
-const copyText = `COPY vcf.genotypes (variant_id, sample_id, gt, gq, dp) FROM STDIN`;
-```
+### TileDB Bulk Operations
+TileDB-VCF handles bulk operations automatically with optimized columnar storage and compression.
 
 ### MCP Tool Pattern
 All MCP tools follow this structure:
@@ -120,14 +119,14 @@ Streaming parser handles large files efficiently:
 ### Environment Variables
 Critical settings in `.env`:
 - `MAX_WORKER_THREADS`: CPU core utilization (default: detected cores)
-- `BATCH_SIZE`: Database operation batch size (default: 10000)
-- `DB_*`: PostgreSQL connection parameters
+- `BATCH_SIZE`: TileDB operation batch size (default: 10000)
+- `TILEDB_WORKSPACE`: TileDB array storage location (default: ./tiledb_workspace)
 
-### Docker Services
-`docker/docker-compose.yml` includes PostgreSQL tuning:
-- `shared_buffers=2GB`, `effective_cache_size=6GB`
-- `max_parallel_workers=8` for query parallelization
-- Persistent volumes for data retention
+### TileDB Configuration
+TileDB arrays are automatically configured with:
+- Optimized compression for genomic data (up to 100x reduction)
+- Spatial indexing for fast chromosome/position queries
+- Columnar storage for efficient variant filtering
 
 ## Testing and Development Workflow
 
@@ -150,11 +149,11 @@ Critical settings in `.env`:
 2. Implement logic in `CallToolRequestSchema` handler
 3. Follow existing pattern of database queries + JSON responses
 
-### Database Schema Evolution
-1. Update `docker/init.sql` for schema changes
-2. Add TypeScript interfaces in `src/database/variants.ts`
-3. Update repository methods for new queries
-4. Refresh materialized views if needed
+### TileDB Schema Evolution
+1. Update array schemas in `src/tiledb/query-engine.ts`
+2. Add TypeScript interfaces for new attributes
+3. Update query methods for new data types
+4. TileDB handles schema versioning automatically
 
 ### CLI Command Extensions
 Extend `src/cli/index.ts` using Commander.js patterns:
